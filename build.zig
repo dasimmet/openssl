@@ -13,6 +13,8 @@ pub fn build(b: *std.Build) void {
     });
     const lib = b.addLibrary(.{ .name = "openssl", .root_module = mod });
 
+    const use_x86_64_asm = (target.result.cpu.arch == .x86_64 and target.result.os.tag == .linux);
+
     const ssl_dir_flag = switch (target.result.os.tag) {
         // This is not correct for all distros. This package will need to patch
         // openssl to search at runtime for this directory.
@@ -21,40 +23,61 @@ pub fn build(b: *std.Build) void {
         .netbsd => "-DOPENSSLDIR=\"/etc/openssl\"",
         .dragonfly => "-DOPENSSLDIR=\"/usr/local/etc/openssl\"",
         .illumos => "-DOPENSSLDIR=\"/etc/ssl\"",
+        .windows => "-DOPENSSLDIR=\"C:/Program Files/Common Files/SSL\"",
         else => "-DOPENSSLDIR=\"/etc/ssl\"",
     };
 
-    const base_flags = [_][]const u8{
-        "-DAES_ASM",
-        "-DENGINESDIR=\"/dev/null\"",
-        "-DL_ENDIAN",
-        "-DMODULESDIR=\"/dev/null\"",
-        ssl_dir_flag,
-        "-DOPENSSL_BUILDING_OPENSSL",
-        "-DOPENSSL_USE_NODELETE",
-    };
+    const base_flags = std.mem.concat(b.allocator, []const u8, &.{
+        &.{
+            "-DENGINESDIR=\"/dev/null\"",
+            "-DL_ENDIAN",
+            "-DMODULESDIR=\"/dev/null\"",
+            ssl_dir_flag,
+            "-DOPENSSL_BUILDING_OPENSSL",
+            "-DOPENSSL_USE_NODELETE",
+        },
+        if (target.result.os.tag == .windows)
+            &[_][]const u8{
+                "-DUNICODE",
+                "-D_UNICODE",
+                "-DWIN32_LEAN_AND_MEAN",
+                "-D_MT",
+            }
+        else
+            &.{},
+        if (use_x86_64_asm)
+            &[_][]const u8{"-DAES_ASM"}
+        else
+            &[_][]const u8{"-DOPENSSL_NO_ASM"},
+    }) catch @panic("OOM");
 
-    const crypto_flags = base_flags ++ [_][]const u8{
-        "-DBSAES_ASM",
-        "-DCMLL_ASM",
-        "-DECP_NISTZ256_ASM",
-        "-DGHASH_ASM",
-        "-DKECCAK1600_ASM",
-        "-DMD5_ASM",
-        "-DOPENSSL_BN_ASM_GF2m",
-        "-DOPENSSL_BN_ASM_MONT",
-        "-DOPENSSL_BN_ASM_MONT5",
-        "-DOPENSSL_CPUID_OBJ",
-        "-DOPENSSL_IA32_SSE2",
-        "-DPOLY1305_ASM",
-        "-DRC4_ASM",
-        "-DSHA1_ASM",
-        "-DSHA256_ASM",
-        "-DSHA512_ASM",
-        "-DVPAES_ASM",
-        "-DWHIRLPOOL_ASM",
-        "-DX25519_ASM",
-    };
+    const crypto_flags = std.mem.concat(b.allocator, []const u8, &.{
+        base_flags,
+        if (use_x86_64_asm)
+            &[_][]const u8{
+                "-DBSAES_ASM",
+                "-DCMLL_ASM",
+                "-DECP_NISTZ256_ASM",
+                "-DGHASH_ASM",
+                "-DKECCAK1600_ASM",
+                "-DMD5_ASM",
+                "-DOPENSSL_BN_ASM_GF2m",
+                "-DOPENSSL_BN_ASM_MONT",
+                "-DOPENSSL_BN_ASM_MONT5",
+                "-DOPENSSL_CPUID_OBJ",
+                "-DOPENSSL_IA32_SSE2",
+                "-DPOLY1305_ASM",
+                "-DRC4_ASM",
+                "-DSHA1_ASM",
+                "-DSHA256_ASM",
+                "-DSHA512_ASM",
+                "-DVPAES_ASM",
+                "-DWHIRLPOOL_ASM",
+                "-DX25519_ASM",
+            }
+        else
+            &.{},
+    }) catch @panic("OOM");
 
     mod.addCSourceFiles(.{
         .root = upstream.path("ssl"),
@@ -154,7 +177,7 @@ pub fn build(b: *std.Build) void {
             "tls_depr.c",
             "tls_srp.c",
         },
-        .flags = &base_flags,
+        .flags = base_flags,
     });
 
     mod.addCSourceFiles(.{
@@ -355,7 +378,7 @@ pub fn build(b: *std.Build) void {
             "implementations/encode_decode/endecoder_common.c",
             "implementations/encode_decode/encode_key2ms.c",
         },
-        .flags = &base_flags,
+        .flags = base_flags,
     });
 
     mod.addCSourceFiles(.{
@@ -369,7 +392,7 @@ pub fn build(b: *std.Build) void {
             "common/der/der_dsa_gen.c",
             "common/der/der_rsa_gen.c",
         },
-        .flags = &base_flags,
+        .flags = base_flags,
     });
 
     mod.addCSourceFiles(.{
@@ -496,7 +519,6 @@ pub fn build(b: *std.Build) void {
             "bio/bss_null.c",
             "bio/bss_sock.c",
             "bio/ossl_core_bio.c",
-            "bn/asm/x86_64-gcc.c",
             "bn/bn_add.c",
             "bn/bn_asm.c",
             "bn/bn_blind.c",
@@ -878,7 +900,7 @@ pub fn build(b: *std.Build) void {
             "kdf/kdf_err.c",
             "lhash/lh_stats.c",
             "lhash/lhash.c",
-            "loongarchcap.c",
+            //"loongarchcap.c",
             //"md2/md2_dgst.c",
             //"md2/md2_one.c",
             "md4/md4_dgst.c",
@@ -1186,11 +1208,19 @@ pub fn build(b: *std.Build) void {
             "x509/x_x509.c",
             "x509/x_x509a.c",
         },
-        .flags = &crypto_flags,
+        .flags = crypto_flags,
     });
 
-    switch (target.result.cpu.arch) {
-        .x86_64 => mod.addCSourceFiles(.{
+    if (use_x86_64_asm) {
+        mod.addCSourceFiles(.{
+            .root = upstream.path("crypto"),
+            .files = &.{
+                "bn/asm/x86_64-gcc.c",
+            },
+            .flags = crypto_flags,
+        });
+
+        mod.addCSourceFiles(.{
             .root = b.path("crypto"),
             .files = &.{
                 "aes/aes-x86_64.s",
@@ -1231,9 +1261,16 @@ pub fn build(b: *std.Build) void {
 
                 "modes/aes-gcm-avx512.s",
             },
-            .flags = &crypto_flags,
-        }),
-        else => {},
+            .flags = crypto_flags,
+        });
+    } else {
+        mod.addCSourceFiles(.{
+            .root = upstream.path("crypto"),
+            .files = &.{
+                "aes/aes_core.c",
+            },
+            .flags = crypto_flags,
+        });
     }
 
     mod.addCSourceFiles(.{
@@ -1241,7 +1278,7 @@ pub fn build(b: *std.Build) void {
         .files = &.{
             "params_idx.c",
         },
-        .flags = &crypto_flags,
+        .flags = crypto_flags,
     });
 
     mod.addIncludePath(upstream.path("."));
@@ -1250,6 +1287,12 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(upstream.path("providers/common/include"));
     mod.addIncludePath(upstream.path("providers/implementations/include"));
     mod.addIncludePath(b.path("crypto"));
+
+    if (target.result.os.tag == .windows) {
+        mod.linkSystemLibrary("ws2_32", .{});
+        mod.linkSystemLibrary("gdi32", .{});
+        mod.linkSystemLibrary("crypt32", .{});
+    }
 
     lib.installHeadersDirectory(upstream.path("include"), "", .{});
     lib.installHeadersDirectory(b.path("include"), "", .{});
