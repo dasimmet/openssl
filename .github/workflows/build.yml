@@ -23,8 +23,6 @@ jobs:
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2.2.1
-        with:
-          version: ${{ matrix.zig-version }}
 
       - name: Check Formatting
         run: zig fmt --ast-check --check .
